@@ -385,9 +385,11 @@ memory_addresses = { version = "0.4", default-features = false, features = [
 ] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
+enumset = { version = "1.1", default-features = false }
 riscv = "0.16"
 sbi-rt = "0.0.4"
 semihosting = { version = "0.1", optional = true }
+sha2 = "0.11.0"
 tock-registers = { version = "0.10", optional = true }
 trapframe = "0.10"
 memory_addresses = { version = "0.4", default-features = false, features = [

@@ -5,14 +5,22 @@ use core::ptr;
 use core::sync::atomic::Ordering;
 
 use async_executor::StaticLocalExecutor;
+use enumset::{EnumSet, EnumSetType};
 #[cfg(feature = "smp")]
 use hermit_sync::InterruptTicketMutex;
 use hermit_sync::{RawRwSpinLock, RawSpinMutex};
 
 use crate::arch::riscv64::kernel::CPU_ONLINE;
+use crate::env;
 #[cfg(feature = "smp")]
 use crate::scheduler::SchedulerInput;
 use crate::scheduler::{CoreId, PerCoreScheduler};
+
+#[derive(Debug, EnumSetType)]
+pub enum IsaExtension {
+	/// Zkr - Entropy Source Extension
+	Zkr,
+}
 
 pub struct CoreLocal {
 	/// ID of the current Core.
@@ -26,6 +34,8 @@ pub struct CoreLocal {
 	/// Queues to handle incoming requests from the other cores
 	#[cfg(feature = "smp")]
 	pub scheduler_input: InterruptTicketMutex<SchedulerInput>,
+	/// Bitmap of supported ISA extensions
+	isa_extensions: EnumSet<IsaExtension>,
 }
 
 impl CoreLocal {
@@ -44,6 +54,7 @@ impl CoreLocal {
 				ex: StaticLocalExecutor::new(),
 				#[cfg(feature = "smp")]
 				scheduler_input: InterruptTicketMutex::new(SchedulerInput::new()),
+				isa_extensions: CoreLocal::lookup_isa_extensions(core_id),
 			};
 			let this = if core_id == 0 {
 				take_static::take_static! {
@@ -56,6 +67,31 @@ impl CoreLocal {
 
 			asm!("mv gp, {}", in(reg) this);
 		}
+	}
+
+	pub fn lookup_isa_extensions(core_id: CoreId) -> EnumSet<IsaExtension> {
+		let fdt = env::fdt().unwrap();
+		let cpu = fdt
+			.cpus()
+			.find(|cpu| cpu.property("reg").unwrap().as_usize().unwrap() as u32 == core_id)
+			.expect("Could not find CPU node in FDT for core_id {core_id}");
+		let isa_extensions = cpu
+			.property("riscv,isa-extensions")
+			.unwrap()
+			.as_str()
+			.unwrap();
+
+		let mut bitmap = EnumSet::empty();
+		for chunk in isa_extensions.split('\0') {
+			if chunk.is_empty() {
+				continue;
+			}
+
+			if chunk == "zkr" {
+				bitmap |= IsaExtension::Zkr;
+			}
+		}
+		bitmap
 	}
 
 	#[inline]
@@ -86,4 +122,8 @@ pub fn set_core_scheduler(scheduler: *mut PerCoreScheduler) {
 
 pub(crate) fn ex() -> &'static StaticLocalExecutor<RawSpinMutex, RawRwSpinLock> {
 	&CoreLocal::get().ex
+}
+
+pub fn supports_isa_extension(extension: IsaExtension) -> bool {
+	CoreLocal::get().isa_extensions.contains(extension)
 }

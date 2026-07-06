@@ -2,8 +2,10 @@ use core::arch::asm;
 use core::num::NonZeroU64;
 
 use riscv::register::{sie, sstatus, time};
+use sha2::{Digest, Sha256};
 
 use crate::arch::riscv64::kernel::{HARTS_AVAILABLE, get_timebase_freq};
+use crate::kernel::core_local::{IsaExtension, supports_isa_extension};
 use crate::scheduler::CoreId;
 
 /// Current FPU state. Saved at context switch when changed
@@ -208,8 +210,64 @@ impl FPUState {
 	}
 }
 
+/// Seed is not ready yet, keep polling
+const SEED_OPST_WAIT: u32 = 0b01;
+/// Seed is ready, read the entropy from the lower 16 bits
+const SEED_OPST_READY: u32 = 0b10;
+/// Built-in self-test failed, no entropy available
+const SEED_OPST_BIST: u32 = 0b00;
+/// Seed is dead, no entropy available
+const SEED_OPST_DEAD: u32 = 0b11;
+
+fn read_seed_csr() -> u32 {
+	let seed_value: usize;
+	unsafe {
+		asm!("csrrw {seed_value}, 0x015, x0", seed_value = out(reg) seed_value, options(nostack));
+	}
+	seed_value as u32
+}
+
+/// Collect 512 bits of ES16 entropy and condition it with SHA-256.
+/// Reference: https://docs.riscv.org/reference/isa/extensions/crypto-scalar/_attachments/riscv-crypto-spec-scalar.pdf
 pub fn seed_entropy() -> Option<[u8; 32]> {
-	None
+	if !supports_isa_extension(IsaExtension::Zkr) {
+		return None;
+	}
+
+	const MAX_POLL_ATTEMPTS: i32 = 128;
+	let mut attempts = 0;
+	let mut raw_entropy = [0u8; 64];
+	for entropy_word in raw_entropy.as_chunks_mut::<2>().0 {
+		loop {
+			if attempts >= MAX_POLL_ATTEMPTS {
+				warn!("seed CSR did not provide entropy after {attempts} polls");
+				return None;
+			}
+			attempts += 1;
+
+			let seed = read_seed_csr();
+			match seed >> 30 {
+				SEED_OPST_READY => {
+					let entropy = (seed & 0xffff) as u16;
+					entropy_word.copy_from_slice(&entropy.to_ne_bytes());
+					break;
+				}
+				SEED_OPST_WAIT => {
+					// WAIT: not enough entropy yet, keep polling.
+				}
+				SEED_OPST_BIST => {
+					warn!("seed CSR reported BIST state while polling entropy");
+				}
+				SEED_OPST_DEAD => {
+					error!("seed CSR reported DEAD state while polling entropy");
+					return None;
+				}
+				_ => unreachable!(),
+			}
+		}
+	}
+
+	Some(Sha256::digest(raw_entropy).into())
 }
 
 /// Search the least significant bit, indices start at 0
