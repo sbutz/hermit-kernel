@@ -67,7 +67,7 @@ pub struct Qemu {
 	qemu_and_hermit_args: Vec<String>,
 
 	/// Select the RISC-V machine type.
-	#[arg(long, value_enum, default_value_t = RiscvMachine::VirtAiaAplic)]
+	#[arg(long, value_enum, default_value_t = RiscvMachine::VirtAiaAplicImsic)]
 	machine: RiscvMachine,
 }
 
@@ -82,6 +82,9 @@ pub enum RiscvMachine {
 
 	/// QEMU `virt,aia=aplic`, which exercises the APLIC path.
 	VirtAiaAplic,
+
+	/// QEMU `virt,aia=aplic,imsic`, which exercises the APLIC in msi-delivery mode.
+	VirtAiaAplicImsic,
 }
 
 impl RiscvMachine {
@@ -90,6 +93,7 @@ impl RiscvMachine {
 			Self::SifiveU => "sifive_u",
 			Self::Virt => "virt",
 			Self::VirtAiaAplic => "virt,aia=aplic",
+			Self::VirtAiaAplicImsic => "virt,aia=aplic-imsic",
 		}
 	}
 }
