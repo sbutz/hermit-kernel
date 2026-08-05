@@ -12,8 +12,17 @@ use riscv::register::{scause, sie, sstatus, stval};
 use trapframe::TrapFrame;
 
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
+#[cfg(not(feature = "riscv-plic"))]
+use crate::arch::riscv64::kernel::devicetree::msi_supported_vectors;
 use crate::drivers::InterruptHandlerMap;
 use crate::scheduler;
+
+#[cfg(not(feature = "riscv-plic"))]
+mod imsic;
+#[cfg(not(feature = "riscv-plic"))]
+pub(crate) use imsic::init_interrupt_files;
+#[cfg(not(feature = "riscv-plic"))]
+use imsic::{Imsic, init_imsic};
 
 #[cfg(not(feature = "riscv-plic"))]
 mod aplic;
@@ -33,6 +42,9 @@ pub(crate) static EXTERNAL_INTERRUPT_CONTROLLER: SpinMutex<Option<ExternalInterr
 	SpinMutex::new(None);
 
 static INTERRUPT_HANDLERS: OnceCell<InterruptHandlerMap> = OnceCell::new();
+
+#[cfg(not(feature = "riscv-plic"))]
+pub type MsiController = Imsic;
 
 pub(crate) enum ExternalInterruptController {
 	#[cfg(feature = "riscv-plic")]
@@ -106,6 +118,11 @@ impl ExternalInterruptController {
 
 /// Init Interrupts
 pub(crate) fn install() {
+	#[cfg(not(feature = "riscv-plic"))]
+	if let Some(max_vectors) = msi_supported_vectors() {
+		init_imsic(max_vectors.try_into().unwrap());
+	}
+
 	unsafe {
 		// Install trap handler
 		trapframe::init();

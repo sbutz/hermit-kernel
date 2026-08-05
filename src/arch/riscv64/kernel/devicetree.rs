@@ -11,10 +11,10 @@ use virtio::mmio::{DeviceRegisters, DeviceRegistersVolatileFieldAccess};
 use volatile::VolatileRef;
 
 use crate::arch::kernel::interrupts::EXTERNAL_INTERRUPT_CONTROLLER;
-#[cfg(not(feature = "riscv-plic"))]
-use crate::arch::kernel::interrupts::init_aplic;
 #[cfg(feature = "riscv-plic")]
 use crate::arch::kernel::interrupts::init_plic;
+#[cfg(not(feature = "riscv-plic"))]
+use crate::arch::kernel::interrupts::{init_aplic, init_interrupt_files};
 #[cfg(all(
 	any(
 		feature = "virtio-fs",
@@ -88,6 +88,30 @@ pub fn init_interrupt_controller() {
 	};
 
 	#[cfg(not(feature = "riscv-plic"))]
+	if let Some(imsic_node) = find_imsic(&fdt) {
+		let imsic_region = imsic_node
+			.reg()
+			.expect("Reg property for imsic not found in FDT")
+			.next()
+			.unwrap();
+		let addr = PhysAddr::from(imsic_region.starting_address.addr());
+		let size = imsic_region.size.unwrap();
+
+		// Build a mapping from hart-id to index of the interrupt file region
+		let num_harts = fdt.cpus().count();
+		let mut interrupt_file_indices = vec![0usize; num_harts];
+		for cpu in fdt.cpus() {
+			let hart_id = cpu.ids().first();
+			let index = external_interrupt_index(&fdt, imsic_node, hart_id)
+				.expect("No S-mode interrupt file found for hart in FDT. AMP is not supported.");
+			interrupt_file_indices[hart_id] = usize::from(index);
+		}
+
+		debug!("Found IMSIC at {addr:p}, size: {size:#x}, num_harts: {num_harts}");
+		init_interrupt_files(addr, size, interrupt_file_indices);
+	}
+
+	#[cfg(not(feature = "riscv-plic"))]
 	if let Some(aplic_node) = find_aplic(&fdt) {
 		let aplic_region = aplic_node
 			.reg()
@@ -97,12 +121,18 @@ pub fn init_interrupt_controller() {
 		let addr = PhysAddr::from(aplic_region.starting_address.addr());
 		let size = aplic_region.size.unwrap();
 
-		let msi_delivery = false;
+		let msi_parent = aplic_node.property("msi-parent").map(|msi_parent| {
+			let phandle = u32::try_from(msi_parent.as_usize().unwrap()).unwrap();
+			fdt.find_phandle(phandle)
+				.expect("msi-parent of APLIC not found in FDT")
+		});
+		let msi_delivery = msi_parent.is_some();
 
 		// Route interrupts to the boot hart, which runs the async executor.
 		let boot_hart_id = super::get_current_boot_id() as usize;
-		let hart_index = external_interrupt_index(&fdt, aplic_node, boot_hart_id)
-			.expect("No S-mode APLIC hart index found for boot hart in FDT");
+		let hart_index =
+			external_interrupt_index(&fdt, msi_parent.unwrap_or(aplic_node), boot_hart_id)
+				.expect("No S-mode APLIC hart index found for boot hart in FDT");
 		debug!(
 			"Found APLIC at {addr:p}, size: {size:#x}, msi_delivery: {msi_delivery:?}, hart_index: {hart_index}"
 		);
@@ -133,6 +163,35 @@ pub fn init_interrupt_controller() {
 	if EXTERNAL_INTERRUPT_CONTROLLER.lock().is_none() {
 		warn!("No external interrupt controller found");
 	}
+}
+
+#[cfg(not(feature = "riscv-plic"))]
+pub fn msi_supported_vectors() -> Option<usize> {
+	let fdt = env::start_info().fdt()?;
+	let imsic_node = find_imsic(&fdt)?;
+
+	imsic_node.property("riscv,num-ids")?.as_usize()
+}
+
+#[cfg(not(feature = "riscv-plic"))]
+fn find_imsic<'a>(fdt: &'a fdt::Fdt<'_>) -> Option<fdt::node::FdtNode<'a, 'a>> {
+	let mut node = fdt.find_compatible(&["riscv,imsics"])?;
+
+	// Different interrupts domains, including m-mode domains, show up as different nodes.
+	// We expect a hierarchy of one m-mode domain and one s-mode domain as described in
+	// 'The RISC-V Advanced Interrupt Architecture', Version 1, Figure 4.2
+	if node.property("status").and_then(|p| p.as_str()) == Some("disabled") {
+		let phandle = node.property("riscv,children")?.as_usize()?;
+		node = fdt.find_phandle(phandle as u32)?;
+
+		// Ensure the S-mode domain is actually enabled
+		assert!(
+			node.property("status").and_then(|p| p.as_str()) != Some("disabled"),
+			"Referenced s-mode interrupt domain is not enabled in FDT"
+		);
+	}
+
+	Some(node)
 }
 
 #[cfg(not(feature = "riscv-plic"))]

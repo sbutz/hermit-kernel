@@ -16,6 +16,7 @@ use volatile::{VolatileFieldAccess, VolatileRef};
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
 use crate::arch::kernel::interrupts::{EXTERNAL_INTERRUPT_CONTROLLER, ExternalInterruptController};
 use crate::arch::mm::paging::{self, BasePageSize, PageSize, PageTableEntryFlags};
+use crate::arch::riscv64::kernel::core_local::msi_controller;
 use crate::mm::{PageAlloc, PageRangeAllocator};
 
 #[bitfield(u32)]
@@ -350,8 +351,6 @@ impl Aplic {
 	}
 
 	fn init(&mut self, msi_delivery: bool) {
-		assert!(!msi_delivery, "MSI delivery mode is not supported yet");
-
 		let aplic_ptr = self.control_region.as_mut_ptr();
 		let mut domaincfg = aplic_ptr.domaincfg().read();
 		if domaincfg.big_endian() {
@@ -439,6 +438,22 @@ impl Aplic {
 				.clrienum()
 				.write(u32::from(irq_number));
 		}
+
+		if let Some(msi_controller) = msi_controller() {
+			let target: u32 = unsafe {
+				self.control_region
+					.as_mut_ptr()
+					.target()
+					.map(|slice| {
+						slice
+							.cast()
+							.offset(isize::try_from(irq_number).unwrap() - 1)
+					})
+					.read()
+			};
+			let eiid = TargetMsiDelivery::from(target).eiid();
+			msi_controller.set_interrupt_enable(NonZeroU16::new(eiid).unwrap(), value);
+		}
 	}
 
 	pub fn set_interrupt_source_mode(&mut self, irq_number: u16, mode: SourceMode) {
@@ -467,11 +482,19 @@ impl Aplic {
 	}
 
 	pub fn set_interrupt_priority(&mut self, irq_number: u16, priority: u8) {
-		let max_priority = u8::MAX >> (8 - self.ipriolen);
-		let new_value = TargetDirectDelivery::new()
-			.with_hart_index(self.hart_index)
-			.with_priority(priority.min(max_priority))
-			.into_bits();
+		let new_value = if msi_controller().is_some() {
+			warn!("APLIC interrupt priority is not supported in MSI delivery mode");
+			TargetMsiDelivery::new()
+				.with_hart_index(self.hart_index)
+				.with_eiid(irq_number)
+				.into_bits()
+		} else {
+			let max_priority = u8::MAX >> (8 - self.ipriolen);
+			TargetDirectDelivery::new()
+				.with_hart_index(self.hart_index)
+				.with_priority(priority.min(max_priority))
+				.into_bits()
+		};
 
 		let target = unsafe {
 			self.control_region.as_mut_ptr().target().map(|slice| {
@@ -484,26 +507,39 @@ impl Aplic {
 	}
 
 	pub fn set_priority_threshold(&mut self, threshold: u8) {
-		let hart_idc = unsafe {
-			self.interrupt_delivery_control
-				.as_mut_ptr()
-				.map(|control| control.cast().offset(self.hart_index as isize))
-		};
-		hart_idc.ithreshold().write(u32::from(threshold));
+		if let Some(msi_controller) = msi_controller() {
+			msi_controller.set_interrupt_priority_threshold(threshold);
+		} else {
+			let hart_idc = unsafe {
+				self.interrupt_delivery_control
+					.as_mut_ptr()
+					.map(|control| control.cast().offset(self.hart_index as isize))
+			};
+			hart_idc.ithreshold().write(u32::from(threshold));
+		}
 	}
 
 	pub fn claim_interrupt(&mut self) -> Option<NonZeroU16> {
-		let hart_idc = unsafe {
-			self.interrupt_delivery_control
-				.as_mut_ptr()
-				.map(|control| control.cast().offset(self.hart_index as isize))
-		};
-		let claimi = hart_idc.claimi().read();
-		NonZeroU16::new(claimi.identity())
+		trace!("Claiming interrupt from APLIC");
+		if let Some(msi_controller) = msi_controller() {
+			msi_controller.claim_interrupt()
+		} else {
+			let hart_idc = unsafe {
+				self.interrupt_delivery_control
+					.as_mut_ptr()
+					.map(|control| control.cast().offset(self.hart_index as isize))
+			};
+			let claimi = hart_idc.claimi().read();
+			NonZeroU16::new(claimi.identity())
+		}
 	}
 
 	pub fn complete_interrupt(&mut self, _irq_number: u16) {
-		// reading claimi register automatically completes the interrupt
+		if let Some(msi_controller) = msi_controller() {
+			msi_controller.complete_interrupt(NonZeroU16::new(_irq_number).unwrap());
+		} else {
+			// reading claimi register automatically completes the interrupt
+		}
 	}
 }
 
