@@ -211,7 +211,6 @@ struct Page<S: PageSize> {
 	size: PhantomData<S>,
 }
 
-#[allow(dead_code)]
 impl<S: PageSize> Page<S> {
 	/// Return the stored virtual address.
 	#[cfg_attr(not(feature = "riscv-plic"), allow(dead_code))]

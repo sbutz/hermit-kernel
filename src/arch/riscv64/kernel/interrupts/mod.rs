@@ -46,7 +46,7 @@ pub(crate) static EXTERNAL_INTERRUPT_CONTROLLER: SpinMutex<Option<ExternalInterr
 static INTERRUPT_HANDLERS: OnceCell<InterruptHandlerMap> = OnceCell::new();
 
 #[cfg(not(feature = "riscv-plic"))]
-const MSI_EIID_WAKEUP: u16 = 2;
+pub(crate) const MSI_EIID_WAKEUP: u16 = 2;
 
 #[cfg(not(feature = "riscv-plic"))]
 pub type MsiController = Imsic;
@@ -220,6 +220,9 @@ pub(crate) fn disable() {
 pub(crate) fn install_handlers(mut handlers: InterruptHandlerMap) {
 	let mut ctrl_guard = EXTERNAL_INTERRUPT_CONTROLLER.lock();
 	let ctrl = ctrl_guard.as_mut().unwrap();
+
+	// FIXME: For each MSI-X vector assigned to a pci device, the external interrupt with the same
+	// number is enabled too. This might incur unnecessary cpu traps.
 
 	for irq_number in handlers.keys() {
 		// Set priority to 255 (lowest priority)
