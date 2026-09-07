@@ -162,6 +162,15 @@ semihosting = ["dep:semihosting"]
 ## _application processor_s (AP) from the _boot-strap processor_ (BSP).
 smp = ["acpi"]
 
+## Enables timer management via SBI.
+##
+## This allows hardware without Sstc support to manage timers.
+## E.g. SiFive Freedom U740
+## If this flag is not set, timers will be managed using the Sstc extension.
+##
+## This flag is only evaluated for riscv64.
+riscv-legacy-timer = []
+
 ## Enable drivers for legacy platform level interrupt controller (PLIC).
 ##
 ## If this flag is not set, the advanced platform level interrupt controller (APLIC)

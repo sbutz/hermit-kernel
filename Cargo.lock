@@ -1552,7 +1552,7 @@ dependencies = [
 [[package]]
 name = "riscv"
 version = "0.16.1"
-source = "git+https://github.com/rust-embedded/riscv?branch=master#0e18338b3dbd7a4b9b89a1674457aa6442023fa2"
+source = "git+https://github.com/rust-embedded/riscv?branch=master#ac863e802243fed2ff2ee754a92bf1aef2889bcf"
 dependencies = [
  "critical-section",
  "embedded-hal",
@@ -1564,7 +1564,7 @@ dependencies = [
 [[package]]
 name = "riscv-macros"
 version = "0.4.1"
-source = "git+https://github.com/rust-embedded/riscv?branch=master#0e18338b3dbd7a4b9b89a1674457aa6442023fa2"
+source = "git+https://github.com/rust-embedded/riscv?branch=master#ac863e802243fed2ff2ee754a92bf1aef2889bcf"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1574,7 +1574,7 @@ dependencies = [
 [[package]]
 name = "riscv-types"
 version = "0.1.0"
-source = "git+https://github.com/rust-embedded/riscv?branch=master#0e18338b3dbd7a4b9b89a1674457aa6442023fa2"
+source = "git+https://github.com/rust-embedded/riscv?branch=master#ac863e802243fed2ff2ee754a92bf1aef2889bcf"
 
 [[package]]
 name = "rustix"

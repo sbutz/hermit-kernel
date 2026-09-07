@@ -19,11 +19,11 @@ use riscv::register::sstatus;
 
 pub(crate) use self::processor::set_oneshot_timer;
 use crate::arch::kernel::core_local::core_id;
-pub use crate::arch::kernel::devicetree::init_drivers;
+pub use crate::arch::kernel::devicetree::{detect_timebase_frequency, init_drivers};
 pub use crate::arch::kernel::interrupts::wakeup_core;
 use crate::arch::kernel::processor::lsb;
 use crate::config::KERNEL_STACK_SIZE;
-use crate::env::{self, FdtStartInfo};
+use crate::env;
 use crate::init_cell::InitCell;
 use crate::mm::{FrameAlloc, PageRangeAllocator};
 
@@ -58,20 +58,6 @@ pub fn get_processor_count() -> u32 {
 
 pub fn get_hart_mask() -> u64 {
 	HART_MASK.load(Ordering::Relaxed)
-}
-
-pub fn get_timebase_freq() -> u64 {
-	let fdt = env::start_info().fdt().unwrap();
-
-	// Get timebase-freq
-	let cpus_node = fdt
-		.find_node("/cpus")
-		.expect("cpus node missing or invalid");
-	cpus_node
-		.property("timebase-frequency")
-		.expect("timebase-frequency node not found in /cpus")
-		.as_usize()
-		.unwrap() as u64
 }
 
 pub fn get_current_boot_id() -> u32 {
