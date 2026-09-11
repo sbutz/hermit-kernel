@@ -13,6 +13,8 @@ use trapframe::TrapFrame;
 
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
 #[cfg(not(feature = "riscv-plic"))]
+use crate::arch::riscv64::kernel::core_local::msi_controller;
+#[cfg(not(feature = "riscv-plic"))]
 use crate::arch::riscv64::kernel::devicetree::msi_supported_vectors;
 use crate::drivers::InterruptHandlerMap;
 use crate::scheduler;
@@ -266,11 +268,25 @@ fn external_handler() {
 	use crate::arch::kernel::core_local::core_scheduler;
 	use crate::scheduler::PerCoreSchedulerExt;
 
-	let irq = EXTERNAL_INTERRUPT_CONTROLLER
-		.lock()
-		.as_mut()
-		.unwrap()
-		.claim_interrupt();
+	let irq = {
+		#[cfg(not(feature = "riscv-plic"))]
+		if let Some(msi) = msi_controller() {
+			msi.claim_interrupt()
+		} else {
+			EXTERNAL_INTERRUPT_CONTROLLER
+				.lock()
+				.as_mut()
+				.unwrap()
+				.claim_interrupt()
+		}
+
+		#[cfg(feature = "riscv-plic")]
+		EXTERNAL_INTERRUPT_CONTROLLER
+			.lock()
+			.as_mut()
+			.unwrap()
+			.claim_interrupt()
+	};
 	let Some(irq) = irq else { return };
 
 	let irq_number = irq.get();
@@ -286,6 +302,17 @@ fn external_handler() {
 
 	crate::executor::run();
 
+	#[cfg(not(feature = "riscv-plic"))]
+	if let Some(msi) = msi_controller() {
+		msi.complete_interrupt(irq);
+	} else {
+		EXTERNAL_INTERRUPT_CONTROLLER
+			.lock()
+			.as_mut()
+			.unwrap()
+			.complete_interrupt(irq_number);
+	}
+	#[cfg(feature = "riscv-plic")]
 	EXTERNAL_INTERRUPT_CONTROLLER
 		.lock()
 		.as_mut()
