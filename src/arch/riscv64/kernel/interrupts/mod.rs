@@ -3,13 +3,19 @@ use core::num::NonZeroU16;
 use ahash::RandomState;
 use hashbrown::HashMap;
 use hermit_sync::{InterruptTicketMutex, OnceCell, SpinMutex};
+#[cfg(not(feature = "idle-poll"))]
 use riscv::asm::wfi;
 use riscv::interrupt::{Exception, Interrupt, Trap};
-use riscv::register::{scause, sie, sip, sstatus, stval};
+#[cfg(any(feature = "smp", not(feature = "idle-poll")))]
+use riscv::register::sip;
+use riscv::register::{scause, sie, sstatus, stval};
 use trapframe::TrapFrame;
 
+#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
 use crate::arch::kernel::HARTS_AVAILABLE;
-use crate::arch::kernel::core_local::{core_id, core_scheduler};
+#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
+use crate::arch::kernel::core_local::core_id;
+use crate::arch::kernel::core_local::core_scheduler;
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
 #[cfg(not(feature = "riscv-plic"))]
 use crate::arch::riscv64::kernel::core_local::msi_controller;
@@ -158,43 +164,51 @@ pub(crate) fn add_irq_name(irq_number: u8, name: &'static str) {
 
 /// Waits for the next software, external or timer interrupt and calls the specific handler.
 /// Returns immediately if another core requested this core to stay awake.
+///
+/// With `idle-poll`, this only issues a spin-loop hint and returns without sleeping.
 #[inline]
 pub(crate) fn enable_and_wait() {
-	#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
-	if !scheduler::sleep_state::try_sleep() {
-		return;
-	}
+	#[cfg(feature = "idle-poll")]
+	core::hint::spin_loop();
 
-	debug!("Wait {:x?}", sie::read());
-	loop {
-		wfi();
-		// Interrupts are disabled at this point, so a pending interrupt will
-		// resume the execution. We still have to check if a interrupt is pending
-		// because the WFI instruction could be implemented as NOP (The RISC-V Instruction Set ManualVolume II: Privileged Architecture)
-
-		let pending_interrupts = sip::read();
-
-		// trace!("sip: {:x?}", pending_interrupts);
+	#[cfg(not(feature = "idle-poll"))]
+	{
 		#[cfg(feature = "smp")]
-		if pending_interrupts.ssoft() {
-			//Clear Supervisor-level software interrupt
-			unsafe { sip::clear_ssoft() };
-			trace!("SOFT");
-			crate::arch::kernel::scheduler::wakeup_handler();
-			break;
+		if !scheduler::sleep_state::try_sleep() {
+			return;
 		}
 
-		if pending_interrupts.sext() {
-			trace!("EXT");
-			external_handler();
-			break;
-		}
+		debug!("Wait {:x?}", sie::read());
+		loop {
+			wfi();
+			// Interrupts are disabled at this point, so a pending interrupt will
+			// resume the execution. We still have to check if a interrupt is pending
+			// because the WFI instruction could be implemented as NOP (The RISC-V Instruction Set ManualVolume II: Privileged Architecture)
 
-		if pending_interrupts.stimer() {
-			debug!("sip: {pending_interrupts:x?}");
-			trace!("TIMER");
-			crate::arch::kernel::scheduler::timer_handler();
-			break;
+			let pending_interrupts = sip::read();
+
+			// trace!("sip: {:x?}", pending_interrupts);
+			#[cfg(feature = "smp")]
+			if pending_interrupts.ssoft() {
+				//Clear Supervisor-level software interrupt
+				unsafe { sip::clear_ssoft() };
+				trace!("SOFT");
+				crate::arch::kernel::scheduler::wakeup_handler();
+				break;
+			}
+
+			if pending_interrupts.sext() {
+				trace!("EXT");
+				external_handler();
+				break;
+			}
+
+			if pending_interrupts.stimer() {
+				debug!("sip: {pending_interrupts:x?}");
+				trace!("TIMER");
+				crate::arch::kernel::scheduler::timer_handler();
+				break;
+			}
 		}
 	}
 }
@@ -341,20 +355,18 @@ fn external_handler() {
 
 pub(crate) fn print_statistics() {}
 
+/// Send an inter-processor interrupt to wake up a hart that is in a WFI state.
+#[allow(unused_variables)]
 pub fn wakeup_core(core_to_wakeup: CoreId) {
-	if core_to_wakeup == core_id() {
-		return;
-	}
-	let hart_id = HARTS_AVAILABLE.finalize()[core_to_wakeup as usize];
-	debug!("Wakeup core: {core_to_wakeup} , hart_id: {hart_id}");
 	#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
-	if !scheduler::sleep_state::try_wake_up(core_to_wakeup) {
-		return;
+	if core_to_wakeup != core_id() && scheduler::sleep_state::try_wake_up(core_to_wakeup) {
+		let hart_id = HARTS_AVAILABLE.finalize()[core_to_wakeup as usize];
+		debug!("Wakeup core: {core_to_wakeup} , hart_id: {hart_id}");
+		#[cfg(not(feature = "riscv-plic"))]
+		if let Some(imsic) = msi_controller() {
+			imsic.set_ipi(hart_id, NonZeroU16::new(MSI_EIID_WAKEUP).unwrap());
+			return;
+		}
+		sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(0b1, hart_id));
 	}
-	#[cfg(not(feature = "riscv-plic"))]
-	if let Some(imsic) = msi_controller() {
-		imsic.set_ipi(hart_id, NonZeroU16::new(MSI_EIID_WAKEUP).unwrap());
-		return;
-	}
-	sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(0b1, hart_id));
 }

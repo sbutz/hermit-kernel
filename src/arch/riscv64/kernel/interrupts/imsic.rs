@@ -142,6 +142,10 @@ impl Imsic {
 		// atomic read and write of stopic register automatically completes the interrupt
 	}
 
+	#[cfg_attr(
+		not(all(feature = "smp", not(feature = "idle-poll"))),
+		expect(dead_code)
+	)]
 	pub fn set_ipi(&mut self, hart_id: usize, eiid: NonZeroU16) {
 		assert!(eiid.get() < self.max_vectors);
 		let interrupt_file_addr = INTERRUPT_FILES.get().unwrap()[hart_id];
