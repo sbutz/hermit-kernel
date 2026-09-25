@@ -16,7 +16,7 @@ use volatile::{VolatileFieldAccess, VolatileRef};
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
 use crate::arch::kernel::interrupts::{EXTERNAL_INTERRUPT_CONTROLLER, ExternalInterruptController};
 use crate::arch::mm::paging::{self, BasePageSize, PageSize, PageTableEntryFlags};
-use crate::arch::riscv64::kernel::core_local::{core_id, msi_controller};
+use crate::arch::riscv64::kernel::core_local::msi_controller;
 use crate::mm::{PageAlloc, PageRangeAllocator};
 
 #[bitfield(u32)]
@@ -329,17 +329,21 @@ pub(crate) struct Aplic {
 	control_region: VolatileRef<'static, AplicControlRegion>,
 	interrupt_delivery_control: VolatileRef<'static, InterruptDeliveryControlArray>,
 	ipriolen: u8,
+	/// Hart index of the hart that all interrupts are delivered to
+	hart_index: u16,
 }
 
 impl Aplic {
 	fn new(
 		control_region: VolatileRef<'static, AplicControlRegion>,
 		interrupt_delivery_control: VolatileRef<'static, InterruptDeliveryControlArray>,
+		hart_index: u16,
 	) -> Self {
 		Self {
 			control_region,
 			interrupt_delivery_control,
 			ipriolen: 0,
+			hart_index,
 		}
 	}
 
@@ -374,11 +378,16 @@ impl Aplic {
 		});
 
 		if !msi_delivery {
+			assert!(
+				self.hart_index < APLIC_DIRECT_DELIVERY_MODE_MAX_HARTS,
+				"APLIC direct delivery mode supports only {APLIC_DIRECT_DELIVERY_MODE_MAX_HARTS} harts, but hart index is {}",
+				self.hart_index
+			);
 			self.ipriolen = self.probe_ipriolen();
 			let hart_idc = unsafe {
 				self.interrupt_delivery_control
 					.as_mut_ptr()
-					.map(|control| control.cast().offset(Aplic::get_hart_index() as isize))
+					.map(|control| control.cast().offset(self.hart_index as isize))
 			};
 			hart_idc.idelivery().write(1);
 		}
@@ -398,7 +407,7 @@ impl Aplic {
 		let saved_target_reg = target.read();
 		target.write(TargetRegister::from(
 			TargetDirectDelivery::new()
-				.with_hart_index(Aplic::get_hart_index())
+				.with_hart_index(self.hart_index)
 				.with_priority(0xff)
 				.into_bits(),
 		));
@@ -412,30 +421,6 @@ impl Aplic {
 			"APLIC IPRIOLEN must be between 1 and 8, but probed {ipriolen}"
 		);
 		ipriolen
-	}
-
-	fn get_hart_index() -> u16 {
-		// The core identifier and the hart index of an core in an interrupt domain are not necessarily the same.
-		// The hart index can be extracted from the devicetree as following.
-		// 1. Find all core nodes cpu@X
-		// 2. For each core find core local interrupter node (<compatible> = "riscv,cpu-intc") and get its phandle
-		// 3. Find aplic node (<compatible> = "riscv,aplic", <status> != "disabled") for active interrupt domain
-		// 4. Property <interrupts-extended> is a list of tuples with the following format: <phandle cpu-intc> <interrupt-specifier> ...
-		//    For supervisor external interrupts interrupt-specifier = 0x9
-		//    For machine external interrupts interrupt-specifier = 0xb
-		// 5. The index of the tuple in the list is the hart index of the core in the interrupt domain.
-		//
-		// The core identifier is identical to the interrupt domain hart index if
-		// - the core identifier are continuous and start with 0 and
-		// - the interrupt-extended property of the aplic node is ordered by core identifier.
-		// On QEMU virt machine these assumptions hold true.
-
-		let core_id: u16 = core_id().try_into().unwrap();
-		assert!(
-			core_id < APLIC_DIRECT_DELIVERY_MODE_MAX_HARTS,
-			"APLIC direct delivery mode supports only {APLIC_DIRECT_DELIVERY_MODE_MAX_HARTS} harts, but core_id is {core_id}"
-		);
-		core_id
 	}
 
 	pub fn set_enable_bit(&mut self, irq_number: u16, value: bool) {
@@ -487,13 +472,13 @@ impl Aplic {
 	pub fn set_interrupt_priority(&mut self, irq_number: u16, priority: u8) {
 		let new_value = if msi_controller().is_some() {
 			TargetMsiDelivery::new()
-				.with_hart_index(Aplic::get_hart_index())
+				.with_hart_index(self.hart_index)
 				.with_eiid(irq_number)
 				.into_bits()
 		} else {
 			let max_priority = u8::MAX >> (8 - self.ipriolen);
 			TargetDirectDelivery::new()
-				.with_hart_index(Aplic::get_hart_index())
+				.with_hart_index(self.hart_index)
 				.with_priority(priority.min(max_priority))
 				.into_bits()
 		};
@@ -515,7 +500,7 @@ impl Aplic {
 			let hart_idc = unsafe {
 				self.interrupt_delivery_control
 					.as_mut_ptr()
-					.map(|control| control.cast().offset(Aplic::get_hart_index() as isize))
+					.map(|control| control.cast().offset(self.hart_index as isize))
 			};
 			hart_idc.ithreshold().write(u32::from(threshold));
 		}
@@ -529,7 +514,7 @@ impl Aplic {
 			let hart_idc = unsafe {
 				self.interrupt_delivery_control
 					.as_mut_ptr()
-					.map(|control| control.cast().offset(Aplic::get_hart_index() as isize))
+					.map(|control| control.cast().offset(self.hart_index as isize))
 			};
 			let claimi = hart_idc.claimi().read();
 			NonZeroU16::new(claimi.identity())
@@ -545,7 +530,7 @@ impl Aplic {
 	}
 }
 
-pub fn init_aplic(addr: PhysAddr, size: usize, msi_delivery: bool) {
+pub fn init_aplic(addr: PhysAddr, size: usize, msi_delivery: bool, hart_index: u16) {
 	assert!(
 		addr.is_aligned_to(BasePageSize::SIZE),
 		"Aplic control region is not page aligned"
@@ -583,7 +568,7 @@ pub fn init_aplic(addr: PhysAddr, size: usize, msi_delivery: bool) {
 			.unwrap(),
 		)
 	};
-	let mut aplic = Aplic::new(control_region, interrupt_delivery_control);
+	let mut aplic = Aplic::new(control_region, interrupt_delivery_control, hart_index);
 	aplic.init(msi_delivery);
 
 	*EXTERNAL_INTERRUPT_CONTROLLER.lock() = Some(ExternalInterruptController::Aplic(aplic));

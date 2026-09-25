@@ -8,7 +8,6 @@ use core::ptr::NonNull;
 use memory_addresses::PhysAddr;
 #[cfg(all(feature = "gem-net", not(feature = "pci")))]
 use memory_addresses::VirtAddr;
-#[cfg(not(feature = "riscv-plic"))]
 use riscv::interrupt::Interrupt;
 #[cfg(all(feature = "virtio", not(feature = "pci")))]
 use virtio::mmio::{DeviceRegisters, DeviceRegistersVolatileFieldAccess};
@@ -61,13 +60,6 @@ use crate::env::{self, FdtStartInfo};
 use crate::executor::device::NETWORK_DEVICE;
 #[cfg(all(feature = "virtio", not(feature = "pci")))]
 use crate::mm::PageRangeAllocator;
-
-#[cfg(feature = "riscv-plic")]
-enum Model {
-	Fux40,
-	Virt,
-	Unknown,
-}
 
 pub enum InterruptType {
 	/// Default or unspecified type
@@ -202,10 +194,23 @@ pub fn init_interrupt_controller() {
 			.unwrap();
 		let addr = PhysAddr::from(aplic_region.starting_address.addr());
 		let size = aplic_region.size.unwrap();
-		let msi_delivery = aplic_node.property("msi-parent").is_some();
+		let msi_parent = aplic_node.property("msi-parent").map(|msi_parent| {
+			let phandle = u32::try_from(msi_parent.as_usize().unwrap()).unwrap();
+			fdt.find_phandle(phandle)
+				.expect("msi-parent of APLIC not found in FDT")
+		});
+		let msi_delivery = msi_parent.is_some();
 
-		debug!("Found APLIC at {addr:p}, size: {size:#x}, msi_delivery: {msi_delivery:?}");
-		init_aplic(addr, size, msi_delivery);
+		// Route interrupts to the boot hart, which runs the async executor.
+		// In MSI delivery mode, the APLIC addresses harts by their IMSIC hart index.
+		let boot_hart_id = super::get_current_boot_id() as usize;
+		let hart_index =
+			external_interrupt_index(&fdt, msi_parent.unwrap_or(aplic_node), boot_hart_id)
+				.expect("No S-mode APLIC hart index found for boot hart in FDT");
+		debug!(
+			"Found APLIC at {addr:p}, size: {size:#x}, msi_delivery: {msi_delivery:?}, hart_index: {hart_index}"
+		);
+		init_aplic(addr, size, msi_delivery, hart_index);
 	}
 
 	#[cfg(feature = "riscv-plic")]
@@ -221,33 +226,11 @@ pub fn init_interrupt_controller() {
 		let plic_region_size = plic_region.size.unwrap();
 		debug!("Init PLIC at {plic_region_start:p}, size: {plic_region_size:x}");
 
-		let model = fdt
-			.find_node("/")
-			.unwrap()
-			.property("compatible")
-			.expect("compatible not found in FDT")
-			.as_str()
-			.unwrap();
-
-		let platform_model = if model.contains("riscv-virtio") {
-			Model::Virt
-		} else if model.contains("sifive,hifive-unmatched-a00")
-			|| model.contains("sifive,hifive-unleashed-a00")
-			|| model.contains("sifive,fu740")
-			|| model.contains("sifive,fu540")
-		{
-			Model::Fux40
-		} else {
-			warn!("Unknown platform, guessing PLIC context 1");
-			Model::Unknown
-		};
-		info!("Model: {model}");
-
-		// TODO: Determine correct context via devicetree and allow more than one context
-		let context = match platform_model {
-			Model::Virt | Model::Unknown => 1,
-			Model::Fux40 => 2,
-		};
+		// Route interrupts to the boot hart, which runs the async executor
+		let boot_hart_id = super::get_current_boot_id() as usize;
+		let context = external_interrupt_index(&fdt, plic_node, boot_hart_id)
+			.expect("No S-mode PLIC context found for boot hart in FDT");
+		debug!("Using PLIC context {context} for hart {boot_hart_id}");
 		init_plic(plic_region_start, plic_region_size, context);
 	}
 
@@ -525,4 +508,42 @@ pub fn init_drivers(handlers: &mut InterruptHandlerMap) {
 
 	#[cfg(all(any(feature = "virtio", feature = "gem-net"), not(feature = "pci")))]
 	super::mmio::MMIO_DRIVERS.finalize();
+}
+
+/// Returns the index of the entry in `node`'s `interrupts-extended` property that delivers
+/// supervisor external interrupts to `hart_id`.
+///
+/// Each entry references the `riscv,cpu-intc` of a hart and the interrupt it raises there.
+/// For a PLIC, the index is the context of the hart. For an APLIC in direct delivery mode
+/// and for an IMSIC, the index is the hart index of the hart.
+///
+/// References:
+/// <https://github.com/torvalds/linux/blob/60490ca6d54b6f0a00223a4fe59bb180bb1538bf/Documentation/devicetree/bindings/interrupt-controller/sifive%2Cplic-1.0.0.yaml#L62-L67>
+/// <https://github.com/torvalds/linux/blob/60490ca6d54b6f0a00223a4fe59bb180bb1538bf/Documentation/devicetree/bindings/interrupt-controller/riscv%2Caplic.yaml#L42-L48>
+/// <https://github.com/torvalds/linux/blob/60490ca6d54b6f0a00223a4fe59bb180bb1538bf/Documentation/devicetree/bindings/interrupt-controller/riscv%2Cimsics.yaml#L69-L76>
+fn external_interrupt_index(
+	fdt: &fdt::Fdt<'_>,
+	node: fdt::node::FdtNode<'_, '_>,
+	hart_id: usize,
+) -> Option<u16> {
+	let cpu_node = fdt
+		.find_node("/cpus")?
+		.children()
+		.find(|node| node.property("reg").and_then(|reg| reg.as_usize()) == Some(hart_id))?;
+	let intc_node = cpu_node.children().find(|node| {
+		node.compatible()
+			.is_some_and(|compatible| compatible.all().any(|c| c == "riscv,cpu-intc"))
+	})?;
+	let intc_phandle = u32::try_from(intc_node.property("phandle")?.as_usize()?).ok()?;
+
+	assert_eq!(intc_node.interrupt_cells(), Some(1));
+	let interrupts_extended = node.property("interrupts-extended")?.value;
+	let (cells, _) = interrupts_extended.as_chunks::<{ size_of::<u32>() }>();
+	let (entries, _) = cells.as_chunks::<2>();
+	let index = entries.iter().position(|&[phandle, irq]| {
+		u32::from_be_bytes(phandle) == intc_phandle
+			&& u32::from_be_bytes(irq) == Interrupt::SupervisorExternal as u32
+	})?;
+
+	Some(u16::try_from(index).unwrap())
 }

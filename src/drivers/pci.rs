@@ -555,10 +555,13 @@ pub(crate) mod msix {
 			let addr = 0xfee0_0000u64;
 			#[cfg(target_arch = "riscv64")]
 			let addr = {
+				use crate::arch::kernel::HARTS_AVAILABLE;
 				use crate::arch::kernel::core_local::msi_controller;
+				// Deliver MSIs to the boot hart, which runs the async executor
+				let boot_hart_id = HARTS_AVAILABLE.finalize()[0];
 				msi_controller()
 					.unwrap()
-					.get_physical_interrupt_file_address(0)
+					.get_physical_interrupt_file_address(boot_hart_id)
 					.as_u64()
 			};
 

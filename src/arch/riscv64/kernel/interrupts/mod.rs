@@ -327,11 +327,7 @@ fn external_handler() {
 		}
 	}
 
-	if core_id() == 0 {
-		crate::executor::run();
-	} else {
-		crate::arch::kernel::wakeup_core(0);
-	}
+	crate::executor::run();
 
 	#[cfg(not(feature = "riscv-plic"))]
 	if let Some(msi) = msi_controller() {
