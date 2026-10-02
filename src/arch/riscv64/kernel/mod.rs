@@ -75,6 +75,9 @@ pub fn boot_processor_init() {
 	pci::init();
 
 	finish_processor_init();
+
+	#[cfg(feature = "timer-arm-bench")]
+	processor::timer_arm_benchmark();
 }
 
 /// Application Processor initialization

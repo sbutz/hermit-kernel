@@ -179,6 +179,13 @@ riscv-legacy-timer = []
 ## This flag is only evaluated for riscv64.
 riscv-plic = []
 
+## Runs a microbenchmark for arming the timer once during boot.
+##
+## The number of measured rounds is set by `HERMIT_TIMER_ARM_BENCH_ROUNDS`.
+##
+## This flag is only evaluated for riscv64.
+timer-arm-bench = []
+
 #! ### Network Features
 
 ## Enables TCP support.
