@@ -7,6 +7,8 @@ use riscv::register::stimecmp;
 use riscv::register::{sie, sstatus, time};
 
 use crate::arch::kernel::detect_timebase_frequency;
+#[cfg(feature = "event-log")]
+use crate::event_log::{self, Event};
 
 pub(super) static TIMEBASE_FREQUENCY: Lazy<u64> = Lazy::new(detect_timebase_frequency);
 
@@ -291,6 +293,8 @@ pub fn __set_oneshot_timer(wakeup_time: Option<u64>) {
 		sie::set_stimer();
 	}
 	let next_time = wt * u64::from(get_frequency());
+	#[cfg(feature = "event-log")]
+	let armed = get_timestamp();
 
 	#[cfg(not(feature = "riscv-legacy-timer"))]
 	unsafe {
@@ -298,6 +302,14 @@ pub fn __set_oneshot_timer(wakeup_time: Option<u64>) {
 	}
 	#[cfg(feature = "riscv-legacy-timer")]
 	sbi_rt::set_timer(next_time);
+
+	#[cfg(feature = "event-log")]
+	event_log::record_at(
+		armed,
+		Event::TimerArm {
+			deadline: next_time,
+		},
+	);
 }
 
 pub fn set_oneshot_timer(wakeup_time: Option<u64>) {

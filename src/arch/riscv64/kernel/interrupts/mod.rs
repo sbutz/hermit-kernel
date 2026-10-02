@@ -27,6 +27,12 @@ use crate::arch::riscv64::kernel::core_local::msi_controller;
 #[cfg(not(feature = "riscv-plic"))]
 use crate::arch::riscv64::kernel::devicetree::msi_supported_vectors;
 use crate::drivers::InterruptHandlerMap;
+#[cfg(all(
+	feature = "event-log",
+	feature = "smp",
+	not(all(feature = "riscv-plic", feature = "idle-poll"))
+))]
+use crate::event_log::{self, Event};
 use crate::scheduler;
 use crate::scheduler::CoreId;
 
@@ -250,6 +256,8 @@ pub(crate) fn install_handlers(mut handlers: InterruptHandlerMap) {
 			.entry(MSI_EIID_WAKEUP.try_into().unwrap())
 			.or_default()
 			.push_back(|| {
+				#[cfg(feature = "event-log")]
+				event_log::record(Event::IpiReceive);
 				core_scheduler().check_input();
 			});
 	}
@@ -378,7 +386,16 @@ pub fn wakeup_core(core_to_wakeup: CoreId) {
 	if core_to_wakeup != core_id() && scheduler::sleep_state::try_wake_up(core_to_wakeup) {
 		let hart_id = HARTS_AVAILABLE.finalize()[core_to_wakeup as usize];
 		debug!("Wakeup core: {core_to_wakeup} , hart_id: {hart_id}");
+		#[cfg(feature = "event-log")]
+		let sent = crate::arch::kernel::processor::get_timestamp();
 		send_ipi(hart_id);
+		#[cfg(feature = "event-log")]
+		event_log::record_at(
+			sent,
+			Event::IpiSend {
+				target: core_to_wakeup,
+			},
+		);
 	}
 }
 
