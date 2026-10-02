@@ -179,6 +179,11 @@ riscv-legacy-timer = []
 ## This flag is only evaluated for riscv64.
 riscv-plic = []
 
+## Runs a microbenchmark for arming the timer once during boot.
+##
+## This flag is only evaluated for riscv64.
+timer-arm-bench = []
+
 #! ### Network Features
 
 ## Enables TCP support.

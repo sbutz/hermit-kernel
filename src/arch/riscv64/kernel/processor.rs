@@ -303,3 +303,29 @@ pub fn __set_oneshot_timer(wakeup_time: Option<u64>) {
 pub fn set_oneshot_timer(wakeup_time: Option<u64>) {
 	without_interrupts(|| __set_oneshot_timer(wakeup_time));
 }
+
+/// Mean cost of arming and disarming the timer.
+#[cfg(feature = "timer-arm-bench")]
+pub fn timer_arm_benchmark() {
+	const WARMUP_ROUNDS: u64 = 1_000;
+	const ROUNDS: u64 = 1_000_000;
+
+	// One hour ahead, so the timer never fires during the benchmark.
+	let deadline = get_timer_ticks() + 3_600_000_000;
+
+	let mut start = 0;
+	for i in 0..WARMUP_ROUNDS + ROUNDS {
+		if i == WARMUP_ROUNDS {
+			start = get_timestamp();
+		}
+		set_oneshot_timer(Some(deadline));
+		set_oneshot_timer(None);
+	}
+	let ticks = get_timestamp() - start;
+
+	println!(
+		"timer_arm_benchmark rounds={ROUNDS} timebase_hz={} total_ticks={ticks} mean_arm_disarm_ns={}",
+		*TIMEBASE_FREQUENCY,
+		u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY) / u128::from(ROUNDS)
+	);
+}
