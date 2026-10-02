@@ -3,6 +3,8 @@ use free_list::{PageLayout, PageRange};
 use memory_addresses::{PhysAddr, VirtAddr};
 
 use crate::arch::kernel::core_local::core_scheduler;
+#[cfg(feature = "timer-latency-stats")]
+use crate::arch::kernel::processor;
 use crate::arch::mm::paging::{BasePageSize, PageSize, PageTableEntryFlags};
 use crate::config::{DEFAULT_STACK_SIZE, KERNEL_STACK_SIZE};
 use crate::mm::{FrameAlloc, PageAlloc, PageRangeAllocator};
@@ -327,6 +329,9 @@ unsafe extern "C" fn task_start(func: extern "C" fn(usize), arg: usize, user_sta
 }
 
 pub fn timer_handler() {
+	#[cfg(feature = "timer-latency-stats")]
+	processor::timer_latency::record(processor::get_timestamp());
+
 	debug!("Handle timer interrupt");
 	timer_interrupts::clear_active_and_set_next();
 	core_scheduler().handle_waiting_tasks();

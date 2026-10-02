@@ -161,4 +161,6 @@ pub fn boot_next_processor() {
 
 pub fn print_statistics() {
 	interrupts::print_statistics();
+	#[cfg(feature = "timer-latency-stats")]
+	processor::timer_latency::print_statistics();
 }

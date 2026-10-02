@@ -30,6 +30,9 @@ pub struct CoreLocal {
 	pub scheduler_input: InterruptTicketMutex<SchedulerInput>,
 	#[cfg(not(feature = "riscv-plic"))]
 	msi_controller: Cell<*mut MsiController>,
+	/// Deadline of the previous timer interrupt in ticks of the time base.
+	#[cfg(feature = "timer-latency-stats")]
+	pub last_timer_deadline: Cell<u64>,
 }
 
 impl CoreLocal {
@@ -50,6 +53,8 @@ impl CoreLocal {
 				scheduler_input: InterruptTicketMutex::new(SchedulerInput::new()),
 				#[cfg(not(feature = "riscv-plic"))]
 				msi_controller: Cell::new(ptr::null_mut()),
+				#[cfg(feature = "timer-latency-stats")]
+				last_timer_deadline: Cell::new(0),
 			};
 			let this = if core_id == 0 {
 				take_static::take_static! {

@@ -30,6 +30,13 @@ pub struct Slot {
 	wakeup_time: u64,
 }
 
+#[cfg(feature = "timer-latency-stats")]
+impl Slot {
+	pub fn wakeup_time(&self) -> u64 {
+		self.wakeup_time
+	}
+}
+
 #[cfg(feature = "preemptive")]
 const NUMBER_OF_SLOTS: usize = 3;
 

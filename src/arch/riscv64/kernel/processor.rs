@@ -329,3 +329,80 @@ pub fn timer_arm_benchmark() {
 		u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY) / u128::from(ROUNDS)
 	);
 }
+
+/// Lateness of timer interrupts: the time from the programmed deadline to the entry
+/// of the timer handler.
+///
+/// It is recorded in ticks of the time base, because the timer ticks of the kernel
+/// only have a resolution of 1 us.
+///
+/// A task is only woken up once the current time is greater than its deadline. If
+/// the handler runs within the microsecond of the deadline, the timer is armed again
+/// with the same deadline and fires immediately. Such repeated interrupts are
+/// counted, but they do not contribute to the lateness.
+#[cfg(feature = "timer-latency-stats")]
+pub mod timer_latency {
+	use core::sync::atomic::{AtomicU64, Ordering};
+
+	use super::{TIMEBASE_FREQUENCY, get_frequency};
+	use crate::arch::kernel::core_local::{CoreLocal, core_scheduler};
+
+	static INTERRUPTS: AtomicU64 = AtomicU64::new(0);
+	/// Interrupts for the same deadline as the previous interrupt of the core.
+	static REPEATED: AtomicU64 = AtomicU64::new(0);
+	/// Interrupts that arrived before their deadline.
+	static EARLY: AtomicU64 = AtomicU64::new(0);
+	static MIN_TICKS: AtomicU64 = AtomicU64::new(u64::MAX);
+	static MAX_TICKS: AtomicU64 = AtomicU64::new(0);
+	static TOTAL_TICKS: AtomicU64 = AtomicU64::new(0);
+
+	/// Has to be called at the entry of the timer handler with the timestamp of the
+	/// entry, before the active timer is cleared.
+	pub fn record(entry: u64) {
+		INTERRUPTS.fetch_add(1, Ordering::Relaxed);
+
+		// The timer is always armed with the earliest wakeup time, see `__set_oneshot_timer`.
+		let wakeup_time = core_scheduler().timers.next_timer().wakeup_time();
+		let deadline = wakeup_time * u64::from(get_frequency());
+
+		if CoreLocal::get().last_timer_deadline.replace(deadline) == deadline {
+			REPEATED.fetch_add(1, Ordering::Relaxed);
+			return;
+		}
+
+		let Some(ticks) = entry.checked_sub(deadline) else {
+			EARLY.fetch_add(1, Ordering::Relaxed);
+			return;
+		};
+
+		MIN_TICKS.fetch_min(ticks, Ordering::Relaxed);
+		MAX_TICKS.fetch_max(ticks, Ordering::Relaxed);
+		TOTAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
+	}
+
+	pub fn print_statistics() {
+		let interrupts = INTERRUPTS.load(Ordering::Relaxed);
+		let repeated = REPEATED.load(Ordering::Relaxed);
+		let early = EARLY.load(Ordering::Relaxed);
+		let samples = interrupts - repeated - early;
+
+		print!(
+			"timer_latency timebase_hz={} interrupts={interrupts} repeated={repeated} early={early} samples={samples}",
+			*TIMEBASE_FREQUENCY
+		);
+		if samples == 0 {
+			println!();
+			return;
+		}
+
+		let total_ticks = TOTAL_TICKS.load(Ordering::Relaxed);
+		let to_ns =
+			|ticks: u64| u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY);
+		println!(
+			" min_ns={} mean_ns={} max_ns={}",
+			to_ns(MIN_TICKS.load(Ordering::Relaxed)),
+			to_ns(total_ticks) / u128::from(samples),
+			to_ns(MAX_TICKS.load(Ordering::Relaxed))
+		);
+	}
+}
