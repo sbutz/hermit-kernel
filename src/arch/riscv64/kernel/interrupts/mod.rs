@@ -11,12 +11,17 @@ use riscv::register::sip;
 use riscv::register::{scause, sie, sstatus, stval};
 use trapframe::TrapFrame;
 
-#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
+#[cfg(all(
+	feature = "smp",
+	any(not(feature = "idle-poll"), feature = "ipi-send-bench")
+))]
 use crate::arch::kernel::HARTS_AVAILABLE;
 #[cfg(all(feature = "smp", not(feature = "idle-poll")))]
 use crate::arch::kernel::core_local::core_id;
 use crate::arch::kernel::core_local::core_scheduler;
 use crate::arch::kernel::devicetree::InterruptType as DeviceTreeInterruptType;
+#[cfg(feature = "ipi-send-bench")]
+use crate::arch::kernel::processor::{TIMEBASE_FREQUENCY, get_timestamp};
 #[cfg(not(feature = "riscv-plic"))]
 use crate::arch::riscv64::kernel::core_local::msi_controller;
 #[cfg(not(feature = "riscv-plic"))]
@@ -351,6 +356,21 @@ fn external_handler() {
 
 pub(crate) fn print_statistics() {}
 
+/// Sends an inter-processor interrupt to a hart, via MSI if an IMSIC is available
+/// and via SBI otherwise.
+#[cfg(all(
+	feature = "smp",
+	any(not(feature = "idle-poll"), feature = "ipi-send-bench")
+))]
+fn send_ipi(hart_id: usize) {
+	#[cfg(not(feature = "riscv-plic"))]
+	if let Some(imsic) = msi_controller() {
+		imsic.set_ipi(hart_id, NonZeroU16::new(MSI_EIID_WAKEUP).unwrap());
+		return;
+	}
+	sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(0b1, hart_id));
+}
+
 /// Send an inter-processor interrupt to wake up a hart that is in a WFI state.
 #[allow(unused_variables)]
 pub fn wakeup_core(core_to_wakeup: CoreId) {
@@ -358,11 +378,57 @@ pub fn wakeup_core(core_to_wakeup: CoreId) {
 	if core_to_wakeup != core_id() && scheduler::sleep_state::try_wake_up(core_to_wakeup) {
 		let hart_id = HARTS_AVAILABLE.finalize()[core_to_wakeup as usize];
 		debug!("Wakeup core: {core_to_wakeup} , hart_id: {hart_id}");
-		#[cfg(not(feature = "riscv-plic"))]
-		if let Some(imsic) = msi_controller() {
-			imsic.set_ipi(hart_id, NonZeroU16::new(MSI_EIID_WAKEUP).unwrap());
-			return;
-		}
-		sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(0b1, hart_id));
+		send_ipi(hart_id);
 	}
+}
+
+/// Mean cost of sending an IPI to a busy core.
+///
+/// The IPIs bypass `sleep_state`, so every round sends one. The target core is
+/// only busy with `idle-poll`, otherwise it sleeps between the IPIs.
+///
+/// The number of measured rounds is set by `HERMIT_IPI_SEND_BENCH_ROUNDS`.
+#[cfg(feature = "ipi-send-bench")]
+pub fn ipi_send_benchmark() {
+	use core::num::NonZeroU64;
+	use core::str::FromStr;
+
+	const WARMUP_ROUNDS: u64 = 50;
+	const DEFAULT_ROUNDS: u64 = 1_000_000;
+	const TARGET_CORE: usize = 1;
+
+	let rounds = hermit_var!("HERMIT_IPI_SEND_BENCH_ROUNDS").map_or(DEFAULT_ROUNDS, |rounds| {
+		NonZeroU64::from_str(&rounds).unwrap().get()
+	});
+
+	let harts_available = HARTS_AVAILABLE.finalize();
+	assert!(
+		harts_available.len() > TARGET_CORE,
+		"This benchmark requires at least 2 cores."
+	);
+	let hart_id = harts_available[TARGET_CORE];
+
+	#[cfg(not(feature = "riscv-plic"))]
+	let path = if msi_controller().is_some() {
+		"msi"
+	} else {
+		"sbi"
+	};
+	#[cfg(feature = "riscv-plic")]
+	let path = "sbi";
+
+	let mut start = 0;
+	for i in 0..WARMUP_ROUNDS + rounds {
+		if i == WARMUP_ROUNDS {
+			start = get_timestamp();
+		}
+		send_ipi(hart_id);
+	}
+	let ticks = get_timestamp() - start;
+
+	println!(
+		"ipi_send_benchmark path={path} rounds={rounds} timebase_hz={} total_ticks={ticks} mean_send_ns={}",
+		*TIMEBASE_FREQUENCY,
+		u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY) / u128::from(rounds)
+	);
 }

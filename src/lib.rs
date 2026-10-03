@@ -66,6 +66,10 @@
 //!
 //! [`NO_COLOR`]: https://no-color.org/
 //!
+//! ## Benchmark environment variables
+//!
+//! - **`HERMIT_IPI_SEND_BENCH_ROUNDS`** — Sets the number of measured rounds of the `ipi-send-bench` feature. Defaults to `1000000`.
+//!
 //! ## Deprecated environment variables
 //!
 //! - **`UHYVE_MOUNT`** — Sets the Uhyve mount point. Defaults to `/root`. Nowadays Uhyve supplies this to the kernel.

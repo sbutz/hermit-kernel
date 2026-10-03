@@ -186,6 +186,13 @@ riscv-plic = []
 ## This flag is only evaluated for riscv64.
 timer-arm-bench = []
 
+## Runs a microbenchmark for sending IPIs to a busy core once during boot.
+##
+## The number of measured rounds is set by `HERMIT_IPI_SEND_BENCH_ROUNDS`.
+##
+## This flag is only evaluated for riscv64.
+ipi-send-bench = ["smp"]
+
 #! ### Network Features
 
 ## Enables TCP support.
