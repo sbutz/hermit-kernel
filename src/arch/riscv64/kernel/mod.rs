@@ -163,4 +163,6 @@ pub fn print_statistics() {
 	interrupts::print_statistics();
 	#[cfg(feature = "timer-latency-stats")]
 	processor::timer_latency::print_statistics();
+	#[cfg(feature = "ipi-latency-stats")]
+	interrupts::ipi_latency::print_statistics();
 }

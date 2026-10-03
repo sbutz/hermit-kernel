@@ -3,6 +3,8 @@ use free_list::{PageLayout, PageRange};
 use memory_addresses::{PhysAddr, VirtAddr};
 
 use crate::arch::kernel::core_local::core_scheduler;
+#[cfg(feature = "ipi-latency-stats")]
+use crate::arch::kernel::interrupts::ipi_latency;
 #[cfg(feature = "timer-latency-stats")]
 use crate::arch::kernel::processor;
 use crate::arch::mm::paging::{BasePageSize, PageSize, PageTableEntryFlags};
@@ -340,6 +342,9 @@ pub fn timer_handler() {
 
 #[cfg(feature = "smp")]
 pub fn wakeup_handler() {
+	#[cfg(feature = "ipi-latency-stats")]
+	ipi_latency::record_receive();
+
 	debug!("Received Wakeup Interrupt");
 	//increment_irq_counter(WAKEUP_INTERRUPT_NUMBER.into());
 	let core_scheduler = core_scheduler();

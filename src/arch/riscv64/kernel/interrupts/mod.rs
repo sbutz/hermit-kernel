@@ -250,6 +250,8 @@ pub(crate) fn install_handlers(mut handlers: InterruptHandlerMap) {
 			.entry(MSI_EIID_WAKEUP.try_into().unwrap())
 			.or_default()
 			.push_back(|| {
+				#[cfg(feature = "ipi-latency-stats")]
+				ipi_latency::record_receive();
 				core_scheduler().check_input();
 			});
 	}
@@ -378,6 +380,8 @@ pub fn wakeup_core(core_to_wakeup: CoreId) {
 	if core_to_wakeup != core_id() && scheduler::sleep_state::try_wake_up(core_to_wakeup) {
 		let hart_id = HARTS_AVAILABLE.finalize()[core_to_wakeup as usize];
 		debug!("Wakeup core: {core_to_wakeup} , hart_id: {hart_id}");
+		#[cfg(feature = "ipi-latency-stats")]
+		ipi_latency::record_send(core_to_wakeup);
 		send_ipi(hart_id);
 	}
 }
@@ -422,4 +426,68 @@ pub fn ipi_send_benchmark() {
 		*TIMEBASE_FREQUENCY,
 		u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY) / u128::from(ROUNDS)
 	);
+}
+
+/// Delivery latency of IPIs: the time from right before an IPI is sent to the entry
+/// of its handler on the target core. It includes the cost of sending the IPI.
+#[cfg(feature = "ipi-latency-stats")]
+pub mod ipi_latency {
+	use core::sync::atomic::{AtomicU64, Ordering};
+
+	use crate::arch::kernel::core_local::core_id;
+	use crate::arch::kernel::processor::{TIMEBASE_FREQUENCY, get_timestamp};
+	use crate::scheduler::CoreId;
+
+	/// Timestamp of the IPI that each core has not handled yet, 0 if there is none.
+	/// The hart mask of the kernel has 64 bits.
+	static SEND_TIMESTAMPS: [AtomicU64; 64] = [const { AtomicU64::new(0) }; 64];
+	static SAMPLES: AtomicU64 = AtomicU64::new(0);
+	static MIN_TICKS: AtomicU64 = AtomicU64::new(u64::MAX);
+	static MAX_TICKS: AtomicU64 = AtomicU64::new(0);
+	static TOTAL_TICKS: AtomicU64 = AtomicU64::new(0);
+
+	/// Has to be called right before an IPI is sent to `core`.
+	#[cfg_attr(feature = "idle-poll", expect(dead_code))]
+	pub fn record_send(core: CoreId) {
+		SEND_TIMESTAMPS[core as usize].store(get_timestamp(), Ordering::Relaxed);
+	}
+
+	/// Has to be called at the entry of the IPI handler.
+	pub fn record_receive() {
+		let entry = get_timestamp();
+
+		let sent = SEND_TIMESTAMPS[core_id() as usize].swap(0, Ordering::Relaxed);
+		// The handler was not entered for an IPI of `wakeup_core`.
+		if sent == 0 || sent > entry {
+			return;
+		}
+		let ticks = entry - sent;
+
+		SAMPLES.fetch_add(1, Ordering::Relaxed);
+		MIN_TICKS.fetch_min(ticks, Ordering::Relaxed);
+		MAX_TICKS.fetch_max(ticks, Ordering::Relaxed);
+		TOTAL_TICKS.fetch_add(ticks, Ordering::Relaxed);
+	}
+
+	pub fn print_statistics() {
+		let samples = SAMPLES.load(Ordering::Relaxed);
+
+		print!(
+			"ipi_latency timebase_hz={} samples={samples}",
+			*TIMEBASE_FREQUENCY
+		);
+		if samples == 0 {
+			println!();
+			return;
+		}
+
+		let to_ns =
+			|ticks: u64| u128::from(ticks) * 1_000_000_000 / u128::from(*TIMEBASE_FREQUENCY);
+		println!(
+			" min_ns={} mean_ns={} max_ns={}",
+			to_ns(MIN_TICKS.load(Ordering::Relaxed)),
+			to_ns(TOTAL_TICKS.load(Ordering::Relaxed)) / u128::from(samples),
+			to_ns(MAX_TICKS.load(Ordering::Relaxed))
+		);
+	}
 }

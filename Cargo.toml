@@ -291,6 +291,11 @@ alloc-stats = ["talc/counters"]
 ## This flag is only evaluated for riscv64.
 timer-latency-stats = []
 
+## Records the delivery latency of IPIs and prints the statistics on shutdown.
+##
+## This flag is only evaluated for riscv64.
+ipi-latency-stats = ["smp"]
+
 ## Inserts function instrument code for mcount-based tracing.
 ##
 ## This allows instrumentation-based profiling of the kernel.
