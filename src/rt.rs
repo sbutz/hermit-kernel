@@ -150,6 +150,9 @@ pub fn boot_processor_main() -> ! {
 	#[cfg(feature = "smp")]
 	synch_all_cores();
 
+	#[cfg(all(target_arch = "riscv64", feature = "ipi-send-bench"))]
+	interrupts::ipi_send_benchmark();
+
 	#[cfg(feature = "pci")]
 	drivers::pci::print_information();
 

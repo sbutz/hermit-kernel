@@ -184,6 +184,11 @@ riscv-plic = []
 ## This flag is only evaluated for riscv64.
 timer-arm-bench = []
 
+## Runs a microbenchmark for sending IPIs to a busy core once during boot.
+##
+## This flag is only evaluated for riscv64.
+ipi-send-bench = ["smp"]
+
 #! ### Network Features
 
 ## Enables TCP support.

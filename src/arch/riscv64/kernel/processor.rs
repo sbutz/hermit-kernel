@@ -8,7 +8,7 @@ use riscv::register::{sie, sstatus, time};
 
 use crate::arch::kernel::detect_timebase_frequency;
 
-static TIMEBASE_FREQUENCY: Lazy<u64> = Lazy::new(detect_timebase_frequency);
+pub(super) static TIMEBASE_FREQUENCY: Lazy<u64> = Lazy::new(detect_timebase_frequency);
 
 /// Current FPU state. Saved at context switch when changed
 #[repr(C, packed)]

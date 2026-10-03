@@ -143,7 +143,10 @@ impl Imsic {
 	}
 
 	#[cfg_attr(
-		not(all(feature = "smp", not(feature = "idle-poll"))),
+		not(all(
+			feature = "smp",
+			any(not(feature = "idle-poll"), feature = "ipi-send-bench")
+		)),
 		expect(dead_code)
 	)]
 	pub fn set_ipi(&mut self, hart_id: usize, eiid: NonZeroU16) {
