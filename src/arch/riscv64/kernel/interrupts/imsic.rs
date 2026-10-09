@@ -5,14 +5,16 @@
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
+use core::ptr::NonNull;
 
 use align_address::Align;
 use free_list::PageLayout;
 use memory_addresses::{PhysAddr, VirtAddr};
 use riscv::register::{sireg, siselect, stopei};
-use volatile::VolatileFieldAccess;
 use volatile::access::{NoAccess, WriteOnly};
+use volatile::{VolatileFieldAccess, VolatileRef};
 
+use crate::arch::kernel::interrupts::MSI_EIID_WAKEUP;
 use crate::arch::mm::paging::{self, BasePageSize, PageSize, PageTableEntryFlags};
 use crate::arch::riscv64::kernel::core_local::set_msi_controller;
 use crate::init_cell::InitCell;
@@ -105,6 +107,10 @@ impl Imsic {
 	}
 
 	pub fn set_interrupt_priority_threshold(&mut self, threshold: u8) {
+		assert!(
+			threshold == 0 || threshold >= MSI_EIID_WAKEUP as u8,
+			"IPIs shall not be masked by the priority threshold"
+		);
 		self.write(ISelect::Eithreshold as usize, threshold as usize);
 	}
 
@@ -136,6 +142,20 @@ impl Imsic {
 
 	pub fn complete_interrupt(&mut self, _eiid: NonZeroU16) {
 		// atomic read and write of stopic register automatically completes the interrupt
+	}
+
+	#[cfg_attr(any(not(feature = "smp"), feature = "idle-poll"), expect(dead_code))]
+	pub fn set_ipi(&mut self, hart_id: usize, eiid: NonZeroU16) {
+		assert!(eiid.get() < self.max_vectors);
+		let interrupt_file_addr = INTERRUPT_FILES.get().unwrap()[hart_id];
+		let mut interrupt_file =
+			unsafe { VolatileRef::new(NonNull::new(interrupt_file_addr.as_mut_ptr()).unwrap()) };
+		let seteipnum_le = interrupt_file.as_mut_ptr().seteipnum_le();
+
+		// AIA spec: a FENCE is needed before an MSI store to another hart's IMSIC so that
+		// prior memory and device accesses are visible/complete before the IPI arrives.
+		riscv::asm::fence();
+		seteipnum_le.write(u32::from(eiid.get()));
 	}
 }
 
@@ -179,6 +199,10 @@ pub(crate) fn init_imsic(max_vectors: u16) {
 	let mut imsic = Box::new(Imsic::new(max_vectors));
 
 	imsic.set_interrupt_delivery_mode(Eidelivery::ViaInterruptFile);
+
+	// Enable MSI used for IPI
+	#[cfg(feature = "smp")]
+	imsic.set_interrupt_enable(NonZeroU16::new(MSI_EIID_WAKEUP).unwrap(), true);
 
 	set_msi_controller(Box::into_raw(imsic));
 }

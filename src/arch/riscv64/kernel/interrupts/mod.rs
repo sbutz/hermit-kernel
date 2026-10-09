@@ -46,6 +46,9 @@ pub(crate) static EXTERNAL_INTERRUPT_CONTROLLER: SpinMutex<Option<ExternalInterr
 static INTERRUPT_HANDLERS: OnceCell<InterruptHandlerMap> = OnceCell::new();
 
 #[cfg(not(feature = "riscv-plic"))]
+const MSI_EIID_WAKEUP: u16 = 2;
+
+#[cfg(not(feature = "riscv-plic"))]
 pub type MsiController = Imsic;
 
 pub(crate) enum ExternalInterruptController {
@@ -210,7 +213,11 @@ pub(crate) fn disable() {
 	unsafe { sstatus::clear_sie() };
 }
 
-pub(crate) fn install_handlers(handlers: InterruptHandlerMap) {
+#[cfg_attr(
+	not(all(not(feature = "riscv-plic"), feature = "smp")),
+	expect(unused_mut)
+)]
+pub(crate) fn install_handlers(mut handlers: InterruptHandlerMap) {
 	let mut ctrl_guard = EXTERNAL_INTERRUPT_CONTROLLER.lock();
 	let ctrl = ctrl_guard.as_mut().unwrap();
 
@@ -220,6 +227,17 @@ pub(crate) fn install_handlers(handlers: InterruptHandlerMap) {
 		ctrl.enable_interrupt(u16::from(*irq_number));
 	}
 	ctrl.set_priority_threshold(0);
+
+	// Register MSI handler for IPIs
+	#[cfg(all(not(feature = "riscv-plic"), feature = "smp"))]
+	if msi_controller().is_some() {
+		handlers
+			.entry(MSI_EIID_WAKEUP.try_into().unwrap())
+			.or_default()
+			.push_back(|| {
+				crate::arch::kernel::scheduler::wakeup_handler();
+			});
+	}
 
 	INTERRUPT_HANDLERS.set(handlers).unwrap();
 }
@@ -323,3 +341,13 @@ fn external_handler() {
 }
 
 pub(crate) fn print_statistics() {}
+
+#[cfg(all(feature = "smp", not(feature = "idle-poll")))]
+pub(crate) fn send_ipi(hart_id: usize) {
+	#[cfg(not(feature = "riscv-plic"))]
+	if let Some(imsic) = msi_controller() {
+		imsic.set_ipi(hart_id, NonZeroU16::new(MSI_EIID_WAKEUP).unwrap());
+		return;
+	}
+	sbi_rt::send_ipi(sbi_rt::HartMask::from_mask_base(0b1, hart_id));
+}
